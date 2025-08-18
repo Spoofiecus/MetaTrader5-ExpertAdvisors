@@ -18,9 +18,19 @@ input int                StopLossPips = 50;      // Stop Loss in Pips
 input int                TakeProfitPips = 100;   // Take Profit in Pips
 input int                MagicNumber = 102938;   // Magic Number
 
+//--- Multi-Timeframe Filter Settings
+input bool               UseMultiTimeframeFilter = true;   // Enable Multi-Timeframe Confirmation
+input ENUM_TIMEFRAMES    HigherTimeframe = PERIOD_H4;    // Higher Timeframe for Trend Confirmation
+
+//--- Stop Loss & Trailing Stop Settings
+input bool               UseDynamicStop = true;          // Use Dynamic Stop Loss (based on Kijun-sen)
+input bool               UseTrailingStop = true;         // Use Kijun-sen as a Trailing Stop
+input int                StopLossOffsetPips = 10;        // Offset for SL from the Kijun-sen (in Pips)
+
 //--- global variables
 CTrade  trade;
 int     ichimoku_handle;
+int     ichimoku_handle_htf;  // Handle for the higher timeframe Ichimoku
 double  tenkan_buffer[];      // Buffer for Tenkan-sen
 double  kijun_buffer[];       // Buffer for Kijun-sen
 double  senkou_a_buffer[];    // Buffer for Senkou Span A
@@ -52,8 +62,19 @@ int OnInit()
 
    if(ichimoku_handle == INVALID_HANDLE)
      {
-      printf("Error creating Ichimoku indicator");
+      printf("Error creating Ichimoku indicator for the current timeframe");
       return(INIT_FAILED);
+     }
+
+//--- get Ichimoku handle for higher timeframe
+   if(UseMultiTimeframeFilter)
+     {
+      ichimoku_handle_htf = iIchimoku(_Symbol, HigherTimeframe, TenkanSen, KijunSen, SenkouSpanB);
+      if(ichimoku_handle_htf == INVALID_HANDLE)
+        {
+         printf("Error creating Ichimoku indicator for the higher timeframe %s", EnumToString(HigherTimeframe));
+         return(INIT_FAILED);
+        }
      }
 
 //---
@@ -64,21 +85,30 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-//--- release indicator handle
+//--- release indicator handles
    IndicatorRelease(ichimoku_handle);
+   if(UseMultiTimeframeFilter)
+     {
+      IndicatorRelease(ichimoku_handle_htf);
+     }
   }
 //+------------------------------------------------------------------+
 //| Expert tick function                                             |
 //+------------------------------------------------------------------+
 void OnTick()
   {
-//--- static variable to store the bar time. This ensures the logic runs only once per bar.
+//--- TRADE MANAGEMENT (runs on every tick) ---
+// This section is for managing existing trades, like trailing stops.
+   ManageTrailingStop();
+
+//--- NEW TRADE LOGIC (runs once per bar) ---
+// This section checks for new trade opportunities.
    static datetime last_bar_time = 0;
    datetime current_bar_time = (datetime)SeriesInfoInteger(_Symbol, _Period, SERIES_LASTBAR_DATE);
 
    if(current_bar_time == last_bar_time)
      {
-      return; // Not a new bar, do nothing
+      return; // Not a new bar, do nothing more on this tick
      }
    last_bar_time = current_bar_time;
 
@@ -89,7 +119,7 @@ void OnTick()
       CopyBuffer(ichimoku_handle, 3, 1, 2, senkou_b_buffer) != 2 ||    // Senkou Span B
       CopyClose(_Symbol, _Period, 1, KijunSen + 2, close_buffer) != (KijunSen + 2))
      {
-      printf("Error copying indicator/price buffers");
+      printf("Error copying indicator/price buffers for new trade check.");
       return;
      }
 
@@ -129,13 +159,28 @@ void OnTick()
 //--- Check for Strong Buy Signal (All conditions must be met)
    if(buy_kumo_breakout && buy_tenkan_above_kijun && buy_chikou_filter)
      {
-      if(!is_trade_open)
+      if(!is_trade_open && IsHigherTimeframeAligned(true))
         {
          double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         double sl = price - StopLossPips * _Point;
          double tp = price + TakeProfitPips * _Point;
-         if(StopLossPips == 0) sl = 0;
+         double sl = 0;
+
+         //--- Calculate Stop Loss
+         if(UseDynamicStop)
+           {
+            // Dynamic SL: Kijun-sen value from the last completed bar, plus an offset.
+            sl = kijun_buffer[0] - StopLossOffsetPips * _Point;
+           }
+         else
+           {
+            // Fixed SL: Based on input pips.
+            sl = price - StopLossPips * _Point;
+           }
+
+         //--- Zero out SL/TP if their corresponding pip inputs are 0
+         if(StopLossPips == 0 && !UseDynamicStop) sl = 0;
          if(TakeProfitPips == 0) tp = 0;
+
          trade.Buy(LotSize, _Symbol, price, sl, tp, "Ichimoku Strong Buy");
         }
      }
@@ -148,15 +193,118 @@ void OnTick()
 //--- Check for Strong Sell Signal (All conditions must be met)
    if(sell_kumo_breakout && sell_tenkan_below_kijun && sell_chikou_filter)
      {
-      if(!is_trade_open)
+      if(!is_trade_open && IsHigherTimeframeAligned(false))
         {
          double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         double sl = price + StopLossPips * _Point;
          double tp = price - TakeProfitPips * _Point;
-         if(StopLossPips == 0) sl = 0;
+         double sl = 0;
+
+         //--- Calculate Stop Loss
+         if(UseDynamicStop)
+           {
+            // Dynamic SL: Kijun-sen value from the last completed bar, plus an offset.
+            sl = kijun_buffer[0] + StopLossOffsetPips * _Point;
+           }
+         else
+           {
+            // Fixed SL: Based on input pips.
+            sl = price + StopLossPips * _Point;
+           }
+
+         //--- Zero out SL/TP if their corresponding pip inputs are 0
+         if(StopLossPips == 0 && !UseDynamicStop) sl = 0;
          if(TakeProfitPips == 0) tp = 0;
+
          trade.Sell(LotSize, _Symbol, price, sl, tp, "Ichimoku Strong Sell");
         }
+     }
+  }
+//+------------------------------------------------------------------+
+//| Helper Functions                                                 |
+//+------------------------------------------------------------------+
+void ManageTrailingStop()
+  {
+   if(!UseTrailingStop)
+      return;
+
+//--- We need the current Kijun-sen value (from bar 0)
+   double kijun_arr[1];
+   if(CopyBuffer(ichimoku_handle, 1, 0, 1, kijun_arr) != 1)
+     {
+      // Don't flood log with errors, just exit if data is not ready
+      return;
+     }
+   double current_kijun = kijun_arr[0];
+   if(current_kijun == 0) // Kijun might be 0 if indicator is still calculating
+      return;
+
+//--- Loop through all open positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+        {
+         double new_sl = 0;
+         double current_sl = PositionGetDouble(POSITION_SL);
+         double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+         long position_type = PositionGetInteger(POSITION_TYPE);
+
+         if(position_type == POSITION_TYPE_BUY)
+           {
+            new_sl = NormalizeDouble(current_kijun - StopLossOffsetPips * _Point, _Digits);
+            // New SL must be higher than current SL, and also above open price to be profitable
+            if(new_sl > open_price && new_sl > current_sl)
+              {
+               trade.PositionModify(ticket, new_sl, PositionGetDouble(POSITION_TP));
+              }
+           }
+         else if(position_type == POSITION_TYPE_SELL)
+           {
+            new_sl = NormalizeDouble(current_kijun + StopLossOffsetPips * _Point, _Digits);
+            // New SL must be lower than current SL (and not 0), and also below open price
+            if(new_sl < open_price && (new_sl < current_sl || current_sl == 0))
+              {
+               trade.PositionModify(ticket, new_sl, PositionGetDouble(POSITION_TP));
+              }
+           }
+        }
+     }
+  }
+
+bool IsHigherTimeframeAligned(bool is_buy_signal)
+  {
+//--- If the filter is disabled, the alignment is always true
+   if(!UseMultiTimeframeFilter)
+      return(true);
+
+//--- Buffers for HTF data
+   double htf_close[2];
+   double htf_senkou_a[2];
+   double htf_senkou_b[2];
+
+//--- Copy data for the last completed bar on the higher timeframe
+   if(CopyClose(_Symbol, HigherTimeframe, 1, 2, htf_close) != 2 ||
+      CopyBuffer(ichimoku_handle_htf, 2, 1, 2, htf_senkou_a) != 2 ||
+      CopyBuffer(ichimoku_handle_htf, 3, 1, 2, htf_senkou_b) != 2)
+     {
+      printf("Error copying HTF indicator data for %s. Skipping trade check.", _Symbol);
+      return(false); // Fail safe, do not trade
+     }
+
+//--- Determine HTF cloud boundaries and close price
+   double htf_cloud_top = fmax(htf_senkou_a[0], htf_senkou_b[0]);
+   double htf_cloud_bottom = fmin(htf_senkou_a[0], htf_senkou_b[0]);
+   double htf_price_close = htf_close[0];
+
+   if(is_buy_signal)
+     {
+      //--- For a buy signal, we need the HTF to be bullish (price above cloud)
+      return(htf_price_close > htf_cloud_top);
+     }
+   else // is_sell_signal
+     {
+      //--- For a sell signal, we need the HTF to be bearish (price below cloud)
+      return(htf_price_close < htf_cloud_bottom);
      }
   }
 //+------------------------------------------------------------------+
