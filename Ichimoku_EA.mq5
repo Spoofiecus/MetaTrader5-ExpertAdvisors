@@ -21,9 +21,11 @@ input int                MagicNumber = 102938;   // Magic Number
 //--- global variables
 CTrade  trade;
 int     ichimoku_handle;
-double  senkou_a_buffer[2];
-double  senkou_b_buffer[2];
-double  close_buffer[2];
+double  tenkan_buffer[];      // Buffer for Tenkan-sen
+double  kijun_buffer[];       // Buffer for Kijun-sen
+double  senkou_a_buffer[];    // Buffer for Senkou Span A
+double  senkou_b_buffer[];    // Buffer for Senkou Span B
+double  close_buffer[];       // Buffer for Close prices
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -33,6 +35,17 @@ int OnInit()
 //--- create trade instance
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetMarginMode();
+
+//--- resize buffers
+   ArrayResize(tenkan_buffer, 2);
+   ArrayResize(kijun_buffer, 2);
+   ArrayResize(senkou_a_buffer, 2);
+   ArrayResize(senkou_b_buffer, 2);
+   if(ArrayResize(close_buffer, KijunSen + 2) != KijunSen + 2)
+     {
+      printf("Error resizing close_buffer array! KijunSen=%d", KijunSen);
+      return(INIT_FAILED);
+     }
 
 //--- get Ichimoku handle
    ichimoku_handle = iIchimoku(_Symbol, _Period, TenkanSen, KijunSen, SenkouSpanB);
@@ -69,10 +82,12 @@ void OnTick()
      }
    last_bar_time = current_bar_time;
 
-//--- get Ichimoku and price values for the last 2 completed bars
-   if(CopyBuffer(ichimoku_handle, 2, 1, 2, senkou_a_buffer) != 2 || // Senkou Span A
-      CopyBuffer(ichimoku_handle, 3, 1, 2, senkou_b_buffer) != 2 || // Senkou Span B
-      CopyClose(_Symbol, _Period, 1, 2, close_buffer) != 2)
+//--- get Ichimoku and price values for the last completed bars
+   if(CopyBuffer(ichimoku_handle, 0, 1, 2, tenkan_buffer) != 2 ||      // Tenkan-sen
+      CopyBuffer(ichimoku_handle, 1, 1, 2, kijun_buffer) != 2 ||       // Kijun-sen
+      CopyBuffer(ichimoku_handle, 2, 1, 2, senkou_a_buffer) != 2 ||    // Senkou Span A
+      CopyBuffer(ichimoku_handle, 3, 1, 2, senkou_b_buffer) != 2 ||    // Senkou Span B
+      CopyClose(_Symbol, _Period, 1, KijunSen + 2, close_buffer) != (KijunSen + 2))
      {
       printf("Error copying indicator/price buffers");
       return;
@@ -89,18 +104,30 @@ void OnTick()
         }
      }
 
-//--- Trading logic
-// buffer[1] = value on the bar before the most recently completed bar
-// buffer[0] = value on the most recently completed bar
+//--- Trading Strategy ---
+// The strategy requires three confirmations for a trade:
+// 1. Kumo Breakout: The price must close above/below the Kumo cloud.
+// 2. Tenkan/Kijun Cross: The Tenkan-sen must be above/below the Kijun-sen.
+// 3. Chikou Span Filter: The Chikou span must be above/below the price KijunSen periods ago.
 
-//--- Define cloud boundaries
+// Note on buffer indexing: CopyBuffer starting from bar 1 places the most recently completed bar's data at index 0.
+// buffer[0] = value on the most recently completed bar (bar index 1)
+// buffer[1] = value on the bar before that (bar index 2)
+// close_buffer[KijunSen] = close price from KijunSen bars before the most recently completed one (bar index 1 + KijunSen)
+
+//--- Define cloud boundaries for the last two completed bars
    double cloud_top_curr = fmax(senkou_a_buffer[0], senkou_b_buffer[0]);
    double cloud_bottom_curr = fmin(senkou_a_buffer[0], senkou_b_buffer[0]);
    double cloud_top_prev = fmax(senkou_a_buffer[1], senkou_b_buffer[1]);
    double cloud_bottom_prev = fmin(senkou_a_buffer[1], senkou_b_buffer[1]);
 
-//--- check for buy signal (Price closes above the cloud)
-   if(close_buffer[1] <= cloud_top_prev && close_buffer[0] > cloud_top_curr)
+//--- Define Bullish Conditions
+   bool buy_kumo_breakout = close_buffer[1] <= cloud_top_prev && close_buffer[0] > cloud_top_curr;
+   bool buy_tenkan_above_kijun = tenkan_buffer[0] > kijun_buffer[0];
+   bool buy_chikou_filter = close_buffer[0] > close_buffer[KijunSen];
+
+//--- Check for Strong Buy Signal (All conditions must be met)
+   if(buy_kumo_breakout && buy_tenkan_above_kijun && buy_chikou_filter)
      {
       if(!is_trade_open)
         {
@@ -109,12 +136,17 @@ void OnTick()
          double tp = price + TakeProfitPips * _Point;
          if(StopLossPips == 0) sl = 0;
          if(TakeProfitPips == 0) tp = 0;
-         trade.Buy(LotSize, _Symbol, price, sl, tp, "Ichimoku Buy Signal");
+         trade.Buy(LotSize, _Symbol, price, sl, tp, "Ichimoku Strong Buy");
         }
      }
 
-//--- check for sell signal (Price closes below the cloud)
-   if(close_buffer[1] >= cloud_bottom_prev && close_buffer[0] < cloud_bottom_curr)
+//--- Define Bearish Conditions
+   bool sell_kumo_breakout = close_buffer[1] >= cloud_bottom_prev && close_buffer[0] < cloud_bottom_curr;
+   bool sell_tenkan_below_kijun = tenkan_buffer[0] < kijun_buffer[0];
+   bool sell_chikou_filter = close_buffer[0] < close_buffer[KijunSen];
+
+//--- Check for Strong Sell Signal (All conditions must be met)
+   if(sell_kumo_breakout && sell_tenkan_below_kijun && sell_chikou_filter)
      {
       if(!is_trade_open)
         {
@@ -123,7 +155,7 @@ void OnTick()
          double tp = price - TakeProfitPips * _Point;
          if(StopLossPips == 0) sl = 0;
          if(TakeProfitPips == 0) tp = 0;
-         trade.Sell(LotSize, _Symbol, price, sl, tp, "Ichimoku Sell Signal");
+         trade.Sell(LotSize, _Symbol, price, sl, tp, "Ichimoku Strong Sell");
         }
      }
   }
