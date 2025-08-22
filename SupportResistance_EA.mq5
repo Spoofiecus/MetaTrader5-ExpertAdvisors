@@ -15,12 +15,18 @@ input double   LotSize          = 0.01;         // Lot Size
 input int      StopLossPips     = 50;           // Stop Loss in Pips
 input int      TakeProfitPips   = 100;          // Take Profit in Pips
 input int      MagicNumber      = 12345;        // Magic Number
+//--- MA Trend Filter
+input int      MAPeriod         = 100;          // Moving Average Period
+input ENUM_MA_METHOD MAMethod   = MODE_EMA;     // Moving Average Method
+input ENUM_APPLIED_PRICE AppliedPrice = PRICE_CLOSE; // Applied Price
 
 //--- global variables
 CTrade  trade;
 int     fractals_handle;
+int     ma_handle;
 double  upper_fractal_buffer[];
 double  lower_fractal_buffer[];
+double  ma_buffer[];
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -39,9 +45,18 @@ int OnInit()
       return(INIT_FAILED);
      }
 
-//--- Set up arrays for fractal data
+//--- get MA handle
+   ma_handle = iMA(_Symbol, _Period, MAPeriod, 0, MAMethod, AppliedPrice);
+   if(ma_handle == INVALID_HANDLE)
+     {
+      printf("Error creating MA indicator");
+      return(INIT_FAILED);
+     }
+
+//--- Set up arrays for indicator data
    ArraySetAsSeries(upper_fractal_buffer, true);
    ArraySetAsSeries(lower_fractal_buffer, true);
+   ArraySetAsSeries(ma_buffer, true);
 
 //---
    return(INIT_SUCCEEDED);
@@ -51,8 +66,9 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-//--- release indicator handle
+//--- release indicator handles
    IndicatorRelease(fractals_handle);
+   IndicatorRelease(ma_handle);
   }
 //+------------------------------------------------------------------+
 //| Expert tick function                                             |
@@ -74,11 +90,12 @@ void OnTick()
      }
    last_bar_time = current_bar_time;
 
-//--- Copy fractal data
+//--- Copy indicator data
    if(CopyBuffer(fractals_handle, 0, 1, 100, upper_fractal_buffer) <= 0 || // Upper fractals
-      CopyBuffer(fractals_handle, 1, 1, 100, lower_fractal_buffer) <= 0)  // Lower fractals
+      CopyBuffer(fractals_handle, 1, 1, 100, lower_fractal_buffer) <= 0 || // Lower fractals
+      CopyBuffer(ma_handle, 0, 1, 1, ma_buffer) <= 0)                      // MA
      {
-      printf("Error copying Fractal buffers");
+      printf("Error copying indicator buffers");
       return;
      }
 
@@ -130,9 +147,10 @@ void OnTick()
    double current_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double current_bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double last_close = current_rates[1].close;
+   double ma_value = ma_buffer[0];
 
-//--- check for buy signal (Price breaks above resistance)
-   if(last_close > resistance)
+//--- check for buy signal (Price breaks above resistance AND is above MA)
+   if(last_close > resistance && last_close > ma_value)
      {
       if(!is_trade_open)
         {
@@ -144,8 +162,8 @@ void OnTick()
         }
      }
 
-//--- check for sell signal (Price breaks below support)
-   if(last_close < support)
+//--- check for sell signal (Price breaks below support AND is below MA)
+   if(last_close < support && last_close < ma_value)
      {
       if(!is_trade_open)
         {
