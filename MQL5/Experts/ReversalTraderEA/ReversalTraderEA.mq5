@@ -5,18 +5,17 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2023, Your Name (Jules)"
 #property link      "https://www.example.com"
-#property version   "1.00"
-#property description "Expert Advisor for reversal trading using RSI, Aroon, and Zigzag."
+#property version   "1.20" // Incremented version
+#property description "Expert Advisor for reversal trading using RSI, Aroon, and Zigzag. (Corrected)"
 
 #include <Trade/Trade.mqh>
 
 //--- Input Parameters
 input group "Trade Settings"
 input double InpLotSize = 0.01;            // Lot Size
-input int    InpStopLoss = 500;            // Stop Loss (in points)
-input int    InpTakeProfit = 1000;         // Take Profit (in points)
 input ulong  InpMagicNumber = 12345;       // Magic Number
 input int    InpRiskRewardRatio = 2;       // Risk:Reward Ratio for TP
+input int    InpStopLossBuffer = 50;       // SL Buffer (in points)
 
 input group "RSI Settings"
 input int    InpRsiPeriod = 14;            // RSI Period
@@ -64,11 +63,11 @@ int OnInit()
         return(INIT_FAILED);
     }
 
-    // Zigzag is a custom indicator
-    zigzag_handle = iCustom(_Symbol, _Period, "Indicators\\Examples\\ZigZag", InpZigzagDepth, InpZigzagDeviation, InpZigzagBackstep);
+    //--- Use the correct built-in iZigZag function
+    zigzag_handle = iZigZag(_Symbol, _Period, InpZigzagDepth, InpZigzagDeviation, InpZigzagBackstep);
     if(zigzag_handle == INVALID_HANDLE)
     {
-        printf("Error creating Zigzag indicator");
+        printf("Error creating ZigZag indicator");
         return(INIT_FAILED);
     }
 
@@ -91,11 +90,31 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+    //--- Declare arrays for price data
+    double high[200], low[200], close[200];
+    datetime time[3];
+
+    //--- Set arrays as series
+    ArraySetAsSeries(high, true);
+    ArraySetAsSeries(low, true);
+    ArraySetAsSeries(close, true);
+    ArraySetAsSeries(time, true);
+
+    //--- Copy price data
+    if(CopyHigh(_Symbol, _Period, 0, 200, high) < 200 ||
+       CopyLow(_Symbol, _Period, 0, 200, low) < 200 ||
+       CopyClose(_Symbol, _Period, 0, 200, close) < 200 ||
+       CopyTime(_Symbol, _Period, 0, 3, time) < 3)
+    {
+        printf("Error copying price data");
+        return;
+    }
+
     //--- Check for new bar to avoid trading on every tick
     static datetime last_bar_time;
-    if(last_bar_time == Time[0])
+    if(last_bar_time == time[0])
         return;
-    last_bar_time = Time[0];
+    last_bar_time = time[0];
 
     //--- Check if we already have an open position for this symbol
     if(PositionSelect(_Symbol))
@@ -104,11 +123,14 @@ void OnTick()
     }
 
     //--- Get indicator values
-    double rsi_values[3];
+    double rsi_values[200];
     double aroon_up[3];
     double aroon_down[3];
+    ArraySetAsSeries(rsi_values, true);
+    ArraySetAsSeries(aroon_up, true);
+    ArraySetAsSeries(aroon_down, true);
 
-    if(CopyBuffer(rsi_handle, 0, 0, 3, rsi_values) < 3 ||
+    if(CopyBuffer(rsi_handle, 0, 0, 200, rsi_values) < 200 ||
        CopyBuffer(aroon_handle, 0, 0, 3, aroon_up) < 3 ||
        CopyBuffer(aroon_handle, 1, 0, 3, aroon_down) < 3)
     {
@@ -117,30 +139,30 @@ void OnTick()
     }
 
     //--- Check for trading signals
-    CheckBuySignal(rsi_values, aroon_up, aroon_down);
-    CheckSellSignal(rsi_values, aroon_up, aroon_down);
+    CheckBuySignal(rsi_values, aroon_up, aroon_down, high, low, close);
+    CheckSellSignal(rsi_values, aroon_up, aroon_down, high, low, close);
 }
 
 //+------------------------------------------------------------------+
 //| Check for a Buy Signal                                           |
 //+------------------------------------------------------------------+
-void CheckBuySignal(const double &rsi[], const double &aroon_up[], const double &aroon_down[])
+void CheckBuySignal(const double &rsi[], const double &aroon_up[], const double &aroon_down[], const double &high[], const double &low[], const double &close[])
 {
     //--- Basic Conditions
     bool rsi_oversold = rsi[1] < InpRsiOversold;
     bool aroon_bullish = aroon_up[1] > aroon_down[1] || aroon_up[1] > InpAroonTriggerLevel;
 
     //--- Divergence Condition
-    bool bullish_divergence = InpEnableDivergence && CheckBullishDivergence(100);
+    bool bullish_divergence = InpEnableDivergence && CheckBullishDivergence(100, rsi, high, low);
 
     if (aroon_bullish && (rsi_oversold || bullish_divergence))
     {
         double last_swing_low = GetLastZigzagLow();
-        if (last_swing_low > 0 && last_swing_low < Close[1])
+        if (last_swing_low > 0 && last_swing_low < close[1])
         {
             //--- Confluence confirmed, open buy trade
             double entry_price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-            double stop_loss = last_swing_low;
+            double stop_loss = last_swing_low - InpStopLossBuffer * _Point;
             double take_profit = entry_price + (entry_price - stop_loss) * InpRiskRewardRatio;
 
             Print("BUY SIGNAL: RSI Oversold/Divergence, Aroon Bullish, Zigzag Low confirmed.");
@@ -152,23 +174,23 @@ void CheckBuySignal(const double &rsi[], const double &aroon_up[], const double 
 //+------------------------------------------------------------------+
 //| Check for a Sell Signal                                          |
 //+------------------------------------------------------------------+
-void CheckSellSignal(const double &rsi[], const double &aroon_up[], const double &aroon_down[])
+void CheckSellSignal(const double &rsi[], const double &aroon_up[], const double &aroon_down[], const double &high[], const double &low[], const double &close[])
 {
     //--- Basic Conditions
     bool rsi_overbought = rsi[1] > InpRsiOverbought;
     bool aroon_bearish = aroon_down[1] > aroon_up[1] || aroon_down[1] > InpAroonTriggerLevel;
 
     //--- Divergence Condition
-    bool bearish_divergence = InpEnableDivergence && CheckBearishDivergence(100);
+    bool bearish_divergence = InpEnableDivergence && CheckBearishDivergence(100, rsi, high, low);
 
     if (aroon_bearish && (rsi_overbought || bearish_divergence))
     {
         double last_swing_high = GetLastZigzagHigh();
-        if (last_swing_high > 0 && last_swing_high > Close[1])
+        if (last_swing_high > 0 && last_swing_high > close[1])
         {
             //--- Confluence confirmed, open sell trade
             double entry_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            double stop_loss = last_swing_high;
+            double stop_loss = last_swing_high + InpStopLossBuffer * _Point;
             double take_profit = entry_price - (stop_loss - entry_price) * InpRiskRewardRatio;
 
             Print("SELL SIGNAL: RSI Overbought/Divergence, Aroon Bearish, Zigzag High confirmed.");
@@ -178,68 +200,59 @@ void CheckSellSignal(const double &rsi[], const double &aroon_up[], const double
 }
 
 //+------------------------------------------------------------------+
-//| Get the price of the last Zigzag swing low                       |
+//| Get the price of the last Zigzag swing low (Corrected)           |
 //+------------------------------------------------------------------+
 double GetLastZigzagLow()
 {
-    double zigzag_buffer[3]; // We look for the last 3 points
-    // Copy the last 200 bars of Zigzag data, as it's sparse
-    if (CopyBuffer(zigzag_handle, 0, 0, 200, zigzag_buffer) <= 0) return 0;
+    double zigzag_low_buffer[200];
+    ArraySetAsSeries(zigzag_low_buffer, true);
 
-    for (int i = 1; i < 200; i++) // Start from 1 to ignore current incomplete bar
+    //--- Copy data from ZigZag's LOW buffer (#2)
+    if(CopyBuffer(zigzag_handle, 2, 0, 200, zigzag_low_buffer) < 1)
     {
-        if (zigzag_buffer[i] > 0)
+        return 0.0;
+    }
+
+    //--- Find the first non-empty value from the past
+    for(int i = 1; i < 200; i++)
+    {
+        if(zigzag_low_buffer[i] > 0)
         {
-            // To be a swing low, it must be lower than the point before it
-            // This requires finding the *previous* zigzag point, which is complex.
-            // A simpler check: is the point a low price?
-            if(zigzag_buffer[i] == Low[i])
-            {
-               // Check if the previous non-empty zigzag point was higher
-               for(int j=i+1; j<200; j++) {
-                  if(zigzag_buffer[j] > 0) {
-                     if(zigzag_buffer[j] > zigzag_buffer[i]) return zigzag_buffer[i];
-                     else break; // not a swing low
-                  }
-               }
-            }
+            return zigzag_low_buffer[i];
         }
     }
-    return 0;
+    return 0.0;
 }
 
 //+------------------------------------------------------------------+
-//| Get the price of the last Zigzag swing high                      |
+//| Get the price of the last Zigzag swing high (Corrected)          |
 //+------------------------------------------------------------------+
 double GetLastZigzagHigh()
 {
-    double zigzag_buffer[200];
-    if (CopyBuffer(zigzag_handle, 0, 0, 200, zigzag_buffer) <= 0) return 0;
+    double zigzag_high_buffer[200];
+    ArraySetAsSeries(zigzag_high_buffer, true);
 
-    for (int i = 1; i < 200; i++)
+    //--- Copy data from ZigZag's HIGH buffer (#1)
+    if(CopyBuffer(zigzag_handle, 1, 0, 200, zigzag_high_buffer) < 1)
     {
-        if (zigzag_buffer[i] > 0)
+        return 0.0;
+    }
+
+    //--- Find the first non-empty value from the past
+    for(int i = 1; i < 200; i++)
+    {
+        if(zigzag_high_buffer[i] > 0)
         {
-            // To be a swing high, it must be a high price
-            if(zigzag_buffer[i] == High[i])
-            {
-               // Check if the previous non-empty zigzag point was lower
-               for(int j=i+1; j<200; j++) {
-                  if(zigzag_buffer[j] > 0) {
-                     if(zigzag_buffer[j] < zigzag_buffer[i]) return zigzag_buffer[i];
-                     else break; // not a swing high
-                  }
-               }
-            }
+            return zigzag_high_buffer[i];
         }
     }
-    return 0;
+    return 0.0;
 }
 
 //+------------------------------------------------------------------+
 //| Check for Bullish RSI Divergence                                 |
 //+------------------------------------------------------------------+
-bool CheckBullishDivergence(int lookback)
+bool CheckBullishDivergence(int lookback, const double &rsi[], const double &high[], const double &low[])
 {
     int low_idx_1 = -1, low_idx_2 = -1;
 
@@ -251,14 +264,14 @@ bool CheckBullishDivergence(int lookback)
 
     if(low_idx_1 < 0 || low_idx_2 < 0) return false;
 
-    // Price made a lower low
-    if(Low[low_idx_1] < Low[low_idx_2])
-    {
-        double rsi_values[lookback+1];
-        if(CopyBuffer(rsi_handle, 0, 0, lookback+1, rsi_values) < lookback+1) return false;
+    //--- Safety check to prevent out-of-bounds access
+    if(low_idx_1 >= 200 || low_idx_2 >= 200) return false;
 
+    // Price made a lower low
+    if(low[low_idx_1] < low[low_idx_2])
+    {
         // RSI made a higher low
-        if(rsi_values[low_idx_1] > rsi_values[low_idx_2])
+        if(rsi[low_idx_1] > rsi[low_idx_2])
         {
             Print("Bullish Divergence detected: Price LL, RSI HL");
             return true;
@@ -270,7 +283,7 @@ bool CheckBullishDivergence(int lookback)
 //+------------------------------------------------------------------+
 //| Check for Bearish RSI Divergence                                 |
 //+------------------------------------------------------------------+
-bool CheckBearishDivergence(int lookback)
+bool CheckBearishDivergence(int lookback, const double &rsi[], const double &high[], const double &low[])
 {
     int high_idx_1 = -1, high_idx_2 = -1;
 
@@ -282,14 +295,14 @@ bool CheckBearishDivergence(int lookback)
 
     if(high_idx_1 < 0 || high_idx_2 < 0) return false;
 
-    // Price made a higher high
-    if(High[high_idx_1] > High[high_idx_2])
-    {
-        double rsi_values[lookback+1];
-        if(CopyBuffer(rsi_handle, 0, 0, lookback+1, rsi_values) < lookback+1) return false;
+    //--- Safety check to prevent out-of-bounds access
+    if(high_idx_1 >= 200 || high_idx_2 >= 200) return false;
 
+    // Price made a higher high
+    if(high[high_idx_1] > high[high_idx_2])
+    {
         // RSI made a lower high
-        if(rsi_values[high_idx_1] < rsi_values[high_idx_2])
+        if(rsi[high_idx_1] < rsi[high_idx_2])
         {
             Print("Bearish Divergence detected: Price HH, RSI LH");
             return true;
