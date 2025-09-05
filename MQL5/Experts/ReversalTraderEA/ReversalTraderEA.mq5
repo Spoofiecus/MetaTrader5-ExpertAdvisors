@@ -5,8 +5,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2023, Your Name (Jules)"
 #property link      "https://www.example.com"
-#property version   "1.20" // Incremented version
-#property description "Expert Advisor for reversal trading using RSI, Aroon, and Zigzag. (Corrected)"
+#property version   "1.30" // Final version with all fixes
+#property description "Expert Advisor for reversal trading using RSI, Aroon, and Zigzag."
 
 #include <Trade/Trade.mqh>
 
@@ -90,9 +90,9 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-    //--- Declare arrays for price data
-    double high[200], low[200], close[200];
-    datetime time[3];
+    //--- Declare arrays for price data as DYNAMIC
+    double high[], low[], close[];
+    datetime time[];
 
     //--- Set arrays as series
     ArraySetAsSeries(high, true);
@@ -122,10 +122,10 @@ void OnTick()
         return;
     }
 
-    //--- Get indicator values
-    double rsi_values[200];
-    double aroon_up[3];
-    double aroon_down[3];
+    //--- Get indicator values using DYNAMIC arrays
+    double rsi_values[];
+    double aroon_up[];
+    double aroon_down[];
     ArraySetAsSeries(rsi_values, true);
     ArraySetAsSeries(aroon_up, true);
     ArraySetAsSeries(aroon_down, true);
@@ -204,7 +204,7 @@ void CheckSellSignal(const double &rsi[], const double &aroon_up[], const double
 //+------------------------------------------------------------------+
 double GetLastZigzagLow()
 {
-    double zigzag_low_buffer[200];
+    double zigzag_low_buffer[];
     ArraySetAsSeries(zigzag_low_buffer, true);
 
     //--- Copy data from ZigZag's LOW buffer (#2)
@@ -229,7 +229,7 @@ double GetLastZigzagLow()
 //+------------------------------------------------------------------+
 double GetLastZigzagHigh()
 {
-    double zigzag_high_buffer[200];
+    double zigzag_high_buffer[];
     ArraySetAsSeries(zigzag_high_buffer, true);
 
     //--- Copy data from ZigZag's HIGH buffer (#1)
@@ -265,7 +265,7 @@ bool CheckBullishDivergence(int lookback, const double &rsi[], const double &hig
     if(low_idx_1 < 0 || low_idx_2 < 0) return false;
 
     //--- Safety check to prevent out-of-bounds access
-    if(low_idx_1 >= 200 || low_idx_2 >= 200) return false;
+    if(low_idx_1 >= ArraySize(low) || low_idx_2 >= ArraySize(low)) return false;
 
     // Price made a lower low
     if(low[low_idx_1] < low[low_idx_2])
@@ -296,7 +296,7 @@ bool CheckBearishDivergence(int lookback, const double &rsi[], const double &hig
     if(high_idx_1 < 0 || high_idx_2 < 0) return false;
 
     //--- Safety check to prevent out-of-bounds access
-    if(high_idx_1 >= 200 || high_idx_2 >= 200) return false;
+    if(high_idx_1 >= ArraySize(high) || high_idx_2 >= ArraySize(high)) return false;
 
     // Price made a higher high
     if(high[high_idx_1] > high[high_idx_2])
