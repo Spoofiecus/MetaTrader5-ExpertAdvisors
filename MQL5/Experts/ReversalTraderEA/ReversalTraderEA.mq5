@@ -65,7 +65,7 @@ int OnInit()
     }
 
     // Zigzag is a custom indicator
-    zigzag_handle = iCustom(_Symbol, _Period, "Examples\\Zigzag", InpZigzagDepth, InpZigzagDeviation, InpZigzagBackstep);
+    zigzag_handle = iCustom(_Symbol, _Period, "Indicators\\Examples\\ZigZag", InpZigzagDepth, InpZigzagDeviation, InpZigzagBackstep);
     if(zigzag_handle == INVALID_HANDLE)
     {
         printf("Error creating Zigzag indicator");
