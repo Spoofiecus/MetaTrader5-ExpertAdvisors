@@ -1,9 +1,9 @@
 // MQL5 Expert Advisor for the Bollinger Bands Retracement Squeeze Strategy
-// Coded by Jules
+// Coded by Jules (Version 1.2 - Corrected breakout logic)
 
 #property copyright "User"
 #property link      "https://github.com/Jules"
-#property version   "1.0"
+#property version   "1.2"
 #property description "Trades breakouts after a Bollinger Bands squeeze."
 
 //+------------------------------------------------------------------+
@@ -27,7 +27,6 @@ input double                 inp_bb_deviation       = 2.0;         // BB Deviati
 //--- Squeeze Detection
 sinput group                 "Squeeze Detection"
 input int                    inp_squeeze_lookback   = 100;         // Lookback period for Squeeze
-input double                 inp_squeeze_threshold  = 0.8;         // Squeeze Threshold (as % of Avg Width)
 
 //--- Risk Management
 sinput group                 "Risk Management"
@@ -130,50 +129,54 @@ void CheckAndManageTrade()
       CopyBuffer(g_bb_handle,2,0,lookback,lower_band)<lookback) return;
 
 //--- 2. Determine Trend
+   MqlRates htf_rates[];
+   if(CopyRates(_Symbol, inp_trend_tf, 0, 1, htf_rates) < 1) return;
+
    double htf_ema_buffer[1];
    if(CopyBuffer(g_trend_ema_handle,0,0,1,htf_ema_buffer)<1) return;
    bool is_uptrend = (rates[0].close > htf_ema_buffer[0]);
    bool is_downtrend = (rates[0].close < htf_ema_buffer[0]);
    if(!is_uptrend && !is_downtrend) return;
 
-//--- 3. Squeeze Detection
-   double total_width = 0;
-   for(int i=2; i<inp_squeeze_lookback+2; i++)
+//--- 3. Squeeze Detection (on bar[1], the bar before the breakout)
+   double squeeze_check_width = upper_band[1] - lower_band[1];
+   double min_width = squeeze_check_width;
+   for(int i=2; i<inp_squeeze_lookback+1; i++) // Loop through historical widths
      {
-      total_width += (upper_band[i] - lower_band[i]);
+      double historic_width = upper_band[i] - lower_band[i];
+      if(historic_width < min_width)
+        {
+         min_width = historic_width;
+        }
      }
-   double avg_width = total_width / inp_squeeze_lookback;
-   double current_width = upper_band[1] - lower_band[1];
 
-   if(current_width < (avg_width * inp_squeeze_threshold))
+   if(squeeze_check_width <= min_width)
      {
       g_squeeze_active = true;
-      Comment("Squeeze Detected! Watching for breakout...");
-      return; // Squeeze is forming, wait for breakout on a future bar
      }
 
-//--- 4. Breakout Detection
+//--- 4. Breakout Detection (on bar[0], the most recent closed bar)
    if(g_squeeze_active)
      {
-      bool breakout_buy = is_uptrend && rates[1].close > upper_band[1];
-      bool breakout_sell = is_downtrend && rates[1].close < lower_band[1];
+      bool breakout_buy = is_uptrend && rates[0].close > upper_band[0];
+      bool breakout_sell = is_downtrend && rates[0].close < lower_band[0];
 
       if(breakout_buy)
         {
-         ExecuteBuy(rates[1]);
+         ExecuteBuy(rates[0]);
          g_squeeze_active=false; // Reset after breakout
         }
       else if(breakout_sell)
         {
-         ExecuteSell(rates[1]);
+         ExecuteSell(rates[0]);
          g_squeeze_active=false; // Reset after breakout
         }
 
-      // Optional: Reset if bands expand significantly without a breakout
-      if(current_width > (upper_band[2] - lower_band[2]) * 1.5)
+      // If the bands expand without a breakout, reset the squeeze state
+      double current_width = upper_band[0] - lower_band[0];
+      if (current_width > squeeze_check_width * 1.5)
         {
-         g_squeeze_active=false;
-         Comment("");
+         g_squeeze_active = false;
         }
      }
   }
