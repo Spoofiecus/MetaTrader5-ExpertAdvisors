@@ -46,7 +46,7 @@ int OnInit()
   {
 //--- Initialize trade object
    trade.SetExpertMagicNumber(MagicNumber);
-   trade.SetSlippage(Slippage);
+   trade.SetDeviationInPoints(Slippage);
    trade.SetTypeFillingBySymbol(_Symbol);
 
 //--- Initialize daily counters
