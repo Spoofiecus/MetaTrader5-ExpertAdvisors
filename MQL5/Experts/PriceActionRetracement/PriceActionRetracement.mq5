@@ -18,6 +18,14 @@ enum ENUM_TREND
    TREND_NONE
   };
 
+//--- Struct to hold pattern information
+struct PatternInfo
+  {
+   string name;          // Name of the pattern found, e.g., "Bullish PinBar"
+   double sl_base_price; // The price level to base the SL on
+   double tp_base_price; // The price level to base the TP on (e.g., high of signal candle)
+  };
+
 //--- Input Parameters
 input double          RiskPercent = 1.0;            // Risk percentage per trade
 input double          RiskRewardRatio = 2.0;        // Risk-to-Reward Ratio (e.g., 2.0 for 1:2)
@@ -28,9 +36,12 @@ input int             Slippage = 3;                 // Slippage in points
 input int             Lookback5M = 50;              // Bars to check for 5-min trend
 input int             Lookback1M = 100;             // Bars to check for 1-min S/R
 input double          SRZonePips = 3.0;             // S/R zone thickness in pips
+input int             ConsolidationMaxPips = 15;    // Max height of consolidation range in pips
 input bool            EnableEngulfing = true;       // Toggle for Engulfing patterns
 input bool            EnablePinBars = true;         // Toggle for Pin Bar patterns
 input bool            EnableTwoCandleReversal = true; // Toggle for Two-Candle Reversal patterns
+input bool            EnableWickCluster = true;     // Toggle for Rejection Wick Cluster patterns
+input bool            EnableConsolidationBreakout = true; // Toggle for Consolidation Breakout patterns
 
 //--- Global variables
 CTrade trade;
@@ -116,32 +127,29 @@ void OnTick()
    ENUM_TREND trend = GetTrendM5();
    double support = GetNearestSupport();
    double resistance = GetNearestResistance();
-   string pattern = GetCandlestickPattern(rates1M, 1); // Check on last closed bar
+   PatternInfo pattern = GetCandlestickPattern(rates1M, 1); // Check on last closed bar
 
 //--- Main Strategy Logic
-   if(trend == TREND_UP)
+   if(pattern.name != "NONE")
      {
-      // Look for a buy signal: Bullish pattern near support
-      if(StringFind(pattern, "Bullish") != -1 && support > 0)
+      // Bullish setup validation
+      if(trend == TREND_UP && StringFind(pattern.name, "Bullish") != -1 && support > 0)
         {
-         double pattern_low = rates1M[1].low;
-         if(MathAbs(pattern_low - support) <= SRZonePips * _Point)
+         // Check if the base of the pattern is near the support level
+         if(MathAbs(pattern.sl_base_price - support) <= SRZonePips * _Point)
            {
-            Print("BUY SIGNAL: Trend is UP, ", pattern, " found near support ", NormalizeDouble(support, _Digits));
-            ExecuteBuy(rates1M[1].low, rates1M[1].high);
+            Print("BUY SIGNAL: Trend is UP, ", pattern.name, " found near support ", NormalizeDouble(support, _Digits));
+            ExecuteBuy(pattern.sl_base_price, pattern.tp_base_price);
            }
         }
-     }
-   else if(trend == TREND_DOWN)
-     {
-      // Look for a sell signal: Bearish pattern near resistance
-      if(StringFind(pattern, "Bearish") != -1 && resistance > 0)
+      // Bearish setup validation
+      else if(trend == TREND_DOWN && StringFind(pattern.name, "Bearish") != -1 && resistance > 0)
         {
-         double pattern_high = rates1M[1].high;
-         if(MathAbs(pattern_high - resistance) <= SRZonePips * _Point)
+         // Check if the base of the pattern is near the resistance level
+         if(MathAbs(pattern.sl_base_price - resistance) <= SRZonePips * _Point)
            {
-            Print("SELL SIGNAL: Trend is DOWN, ", pattern, " found near resistance ", NormalizeDouble(resistance, _Digits));
-            ExecuteSell(rates1M[1].high, rates1M[1].low);
+            Print("SELL SIGNAL: Trend is DOWN, ", pattern.name, " found near resistance ", NormalizeDouble(resistance, _Digits));
+            ExecuteSell(pattern.sl_base_price, pattern.tp_base_price);
            }
         }
      }
@@ -155,8 +163,8 @@ void OnTick()
 void ExecuteBuy(double sl_base, double tp_base)
   {
    double entry_price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   // Add a 2-pip buffer to the stop loss
-   double sl_price = sl_base - (2 * _Point * 10);
+   // Add a 2-pip buffer. Assumes 1 pip = 10 points for a 5-digit broker.
+   double sl_price = sl_base - (2 * 10 * _Point);
 
    if(sl_price >= entry_price)
      {
@@ -164,7 +172,7 @@ void ExecuteBuy(double sl_base, double tp_base)
       return;
      }
 
-   double sl_pips = (entry_price - sl_price) / (_Point * 10);
+   double sl_pips = (entry_price - sl_price) / (10 * _Point);
    if(sl_pips < 3 || sl_pips > 100)
      {
       Print("SL pips (", sl_pips, ") out of range [3, 100]. Aborting.");
@@ -194,8 +202,8 @@ void ExecuteBuy(double sl_base, double tp_base)
 void ExecuteSell(double sl_base, double tp_base)
   {
    double entry_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   // Add a 2-pip buffer to the stop loss
-   double sl_price = sl_base + (2 * _Point * 10);
+   // Add a 2-pip buffer. Assumes 1 pip = 10 points for a 5-digit broker.
+   double sl_price = sl_base + (2 * 10 * _Point);
 
    if(sl_price <= entry_price)
      {
@@ -203,7 +211,7 @@ void ExecuteSell(double sl_base, double tp_base)
       return;
      }
 
-   double sl_pips = (sl_price - entry_price) / (_Point * 10);
+   double sl_pips = (sl_price - entry_price) / (10 * _Point);
    if(sl_pips < 3 || sl_pips > 100)
      {
       Print("SL pips (", sl_pips, ") out of range [3, 100]. Aborting.");
@@ -408,24 +416,104 @@ double GetNearestResistance()
 //+------------------------------------------------------------------+
 
 //--- Checks for any valid candlestick pattern at the given shift
-string GetCandlestickPattern(const MqlRates &rates[], int shift)
+PatternInfo GetCandlestickPattern(const MqlRates &rates[], int shift)
   {
+   PatternInfo result;
+   result.name = "NONE";
+
    if(EnableEngulfing)
      {
-      if(IsBullishEngulfing(rates, shift)) return "Bullish Engulfing";
-      if(IsBearishEngulfing(rates, shift)) return "Bearish Engulfing";
+      if(IsBullishEngulfing(rates, shift))
+        {
+         result.name = "Bullish Engulfing";
+         result.sl_base_price = rates[shift].low;
+         result.tp_base_price = rates[shift].high;
+         return result;
+        }
+      if(IsBearishEngulfing(rates, shift))
+        {
+         result.name = "Bearish Engulfing";
+         result.sl_base_price = rates[shift].high;
+         result.tp_base_price = rates[shift].low;
+         return result;
+        }
      }
    if(EnablePinBars)
      {
-      if(IsBullishPinBar(rates, shift)) return "Bullish PinBar";
-      if(IsBearishPinBar(rates, shift)) return "Bearish PinBar";
+      if(IsBullishPinBar(rates, shift))
+        {
+         result.name = "Bullish PinBar";
+         result.sl_base_price = rates[shift].low;
+         result.tp_base_price = rates[shift].high;
+         return result;
+        }
+      if(IsBearishPinBar(rates, shift))
+        {
+         result.name = "Bearish PinBar";
+         result.sl_base_price = rates[shift].high;
+         result.tp_base_price = rates[shift].low;
+         return result;
+        }
      }
    if(EnableTwoCandleReversal)
      {
-      if(IsTwoCandleReversalBullish(rates, shift)) return "Bullish Two-Candle Reversal";
-      if(IsTwoCandleReversalBearish(rates, shift)) return "Bearish Two-Candle Reversal";
+      if(IsTwoCandleReversalBullish(rates, shift))
+        {
+         result.name = "Bullish Two-Candle Reversal";
+         result.sl_base_price = rates[shift+1].low; // SL is below the first candle's low
+         result.tp_base_price = rates[shift].high;
+         return result;
+        }
+      if(IsTwoCandleReversalBearish(rates, shift))
+        {
+         result.name = "Bearish Two-Candle Reversal";
+         result.sl_base_price = rates[shift+1].high; // SL is above the first candle's high
+         result.tp_base_price = rates[shift].low;
+         return result;
+        }
      }
-   return "NONE";
+
+   //--- New pattern checks for Wick Cluster
+   if(EnableWickCluster)
+     {
+      double sl_price = 0;
+      if(IsBullishWickCluster(rates, shift, 3, sl_price)) // Check for 3-candle cluster
+        {
+         result.name = "Bullish Wick Cluster";
+         result.sl_base_price = sl_price;
+         result.tp_base_price = rates[shift].high; // TP base is high of last candle in cluster
+         return result;
+        }
+      if(IsBearishWickCluster(rates, shift, 3, sl_price))
+        {
+         result.name = "Bearish Wick Cluster";
+         result.sl_base_price = sl_price;
+         result.tp_base_price = rates[shift].low;
+         return result;
+        }
+     }
+
+   //--- New pattern checks for Consolidation Breakout
+   if(EnableConsolidationBreakout)
+     {
+      double sl_price = 0, tp_price = 0;
+      if(IsConsolidationBreakoutBullish(rates, shift, 4, sl_price, tp_price)) // 4-candle consolidation
+        {
+         result.name = "Bullish Consolidation Breakout";
+         result.sl_base_price = sl_price;
+         result.tp_base_price = tp_price;
+         return result;
+        }
+      if(IsConsolidationBreakoutBearish(rates, shift, 4, sl_price, tp_price))
+        {
+         result.name = "Bearish Consolidation Breakout";
+         result.sl_base_price = sl_price;
+         result.tp_base_price = tp_price;
+         return result;
+        }
+     }
+
+   return result;
   }
 
 //--- Checks for a Bullish Engulfing pattern
@@ -490,4 +578,146 @@ bool IsTwoCandleReversalBearish(const MqlRates &rates[], int shift)
    bool curr_is_bearish = rates[shift].close < rates[shift].open;
    bool closes_below = rates[shift].close < rates[shift+1].low;
    return prev_is_bullish && curr_is_bearish && closes_below;
+  }
+
+//--- Checks for a Bullish Wick Cluster
+bool IsBullishWickCluster(const MqlRates &rates[], int shift, int num_candles, double &sl_price)
+  {
+   // This function checks for a cluster of `num_candles` ending at the bar specified by `shift`.
+   // The entry signal is the close of the `shift` bar itself. All data used is historical.
+   if(shift + num_candles -1 >= ArraySize(rates)) return false;
+
+   int rejection_count = 0;
+   // Initialize with the first candle in the lookback period.
+   double lowest_low = rates[shift].low;
+
+   // Loop through the candles that form the potential cluster (e.g., bars at index 1, 2, 3)
+   for(int i = shift; i < shift + num_candles; i++)
+     {
+      double range = rates[i].high - rates[i].low;
+      if(range == 0) continue;
+
+      // A bullish rejection candle has a long lower wick.
+      double lower_wick = MathMin(rates[i].open, rates[i].close) - rates[i].low;
+      if(lower_wick > range * 0.5)
+        {
+         rejection_count++;
+        }
+
+      // Find the lowest low within the cluster for SL placement.
+      if(rates[i].low < lowest_low)
+        {
+         lowest_low = rates[i].low;
+        }
+     }
+
+   // The strategy requires 2-3 candles. We check if at least 2 are rejection candles.
+   if(rejection_count >= 2)
+     {
+      sl_price = lowest_low;
+      return true;
+     }
+   return false;
+  }
+
+//--- Checks for a Bearish Wick Cluster
+bool IsBearishWickCluster(const MqlRates &rates[], int shift, int num_candles, double &sl_price)
+  {
+   // This function checks for a cluster of `num_candles` ending at the bar specified by `shift`.
+   if(shift + num_candles -1 >= ArraySize(rates)) return false;
+
+   int rejection_count = 0;
+   double highest_high = rates[shift].high;
+
+   for(int i = shift; i < shift + num_candles; i++)
+     {
+      double range = rates[i].high - rates[i].low;
+      if(range == 0) continue;
+
+      double upper_wick = rates[i].high - MathMax(rates[i].open, rates[i].close);
+      if(upper_wick > range * 0.5)
+        {
+         rejection_count++;
+        }
+
+      if(rates[i].high > highest_high)
+        {
+         highest_high = rates[i].high;
+        }
+     }
+
+   if(rejection_count >= 2)
+     {
+      sl_price = highest_high;
+      return true;
+     }
+   return false;
+  }
+
+//--- Checks for a Bullish Consolidation Breakout
+bool IsConsolidationBreakoutBullish(const MqlRates &rates[], int breakout_candle_shift, int consolidation_length, double &sl_price, double &tp_price)
+  {
+   // This function checks for a breakout of a consolidation range.
+   // The breakout candle is at `breakout_candle_shift` (e.g., 1).
+   // The consolidation is the `consolidation_length` of bars *before* the breakout candle.
+   if(breakout_candle_shift + consolidation_length >= ArraySize(rates)) return false;
+
+   // --- Step 1: Identify the consolidation range boundaries ---
+   int consolidation_start_shift = breakout_candle_shift + 1;
+   int consolidation_end_shift = breakout_candle_shift + consolidation_length;
+   double consolidation_high = 0, consolidation_low = 0;
+
+   for(int i = consolidation_start_shift; i <= consolidation_end_shift; i++)
+     {
+      if(rates[i].high > consolidation_high || consolidation_high == 0) consolidation_high = rates[i].high;
+      if(rates[i].low < consolidation_low || consolidation_low == 0) consolidation_low = rates[i].low;
+     }
+
+   // --- Step 2: Check if the consolidation range is "tight" enough ---
+   if((consolidation_high - consolidation_low) > (ConsolidationMaxPips * 10 * _Point)) return false;
+
+   // --- Step 3: Check if the breakout candle is valid ---
+   MqlRates breakout_candle = rates[breakout_candle_shift];
+   bool is_strong_bullish = breakout_candle.close > breakout_candle.open;
+   double body = breakout_candle.close - breakout_candle.open;
+   double range = breakout_candle.high - breakout_candle.low;
+
+   if(is_strong_bullish && breakout_candle.close > consolidation_high && body > range * 0.4)
+     {
+      sl_price = consolidation_low;
+      tp_price = breakout_candle.high;
+      return true;
+     }
+   return false;
+  }
+
+//--- Checks for a Bearish Consolidation Breakout
+bool IsConsolidationBreakoutBearish(const MqlRates &rates[], int breakout_candle_shift, int consolidation_length, double &sl_price, double &tp_price)
+  {
+   if(breakout_candle_shift + consolidation_length >= ArraySize(rates)) return false;
+
+   int consolidation_start_shift = breakout_candle_shift + 1;
+   int consolidation_end_shift = breakout_candle_shift + consolidation_length;
+   double consolidation_high = 0, consolidation_low = 0;
+
+   for(int i = consolidation_start_shift; i <= consolidation_end_shift; i++)
+     {
+      if(rates[i].high > consolidation_high || consolidation_high == 0) consolidation_high = rates[i].high;
+      if(rates[i].low < consolidation_low || consolidation_low == 0) consolidation_low = rates[i].low;
+     }
+
+   if((consolidation_high - consolidation_low) > (ConsolidationMaxPips * 10 * _Point)) return false;
+
+   MqlRates breakout_candle = rates[breakout_candle_shift];
+   bool is_strong_bearish = breakout_candle.close < breakout_candle.open;
+   double body = breakout_candle.open - breakout_candle.close;
+   double range = breakout_candle.high - breakout_candle.low;
+
+   if(is_strong_bearish && breakout_candle.close < consolidation_low && body > range * 0.4)
+     {
+      sl_price = consolidation_high;
+      tp_price = breakout_candle.low;
+      return true;
+     }
+   return false;
   }
