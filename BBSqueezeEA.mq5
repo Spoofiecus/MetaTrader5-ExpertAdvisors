@@ -1,10 +1,10 @@
-// MQL5 Expert Advisor for the Moving Average Crossover with Retracement Strategy
+// MQL5 Expert Advisor for the Bollinger Bands Retracement Squeeze Strategy
 // Coded by Jules
 
 #property copyright "User"
 #property link      "https://github.com/Jules"
 #property version   "1.0"
-#property description "Trades pullbacks to an EMA ribbon in a trending market."
+#property description "Trades breakouts after a Bollinger Bands squeeze."
 
 //+------------------------------------------------------------------+
 //| Include Trade Library                                            |
@@ -14,30 +14,35 @@
 //+------------------------------------------------------------------+
 //| EA Inputs                                                        |
 //+------------------------------------------------------------------+
-//--- MA Ribbon Settings
-sinput group                 "Moving Average Ribbon Settings"
-input int                    inp_ema_fast_period    = 5;           // Fast EMA Period
-input int                    inp_ema_medium_period  = 8;           // Medium EMA Period
-input int                    inp_ema_slow_period    = 13;          // Slow EMA Period
+//--- Trend Filter
+sinput group                 "Trend Filter Settings"
+input ENUM_TIMEFRAMES        inp_trend_tf           = PERIOD_M15;  // Higher Timeframe for Trend EMA
+input int                    inp_trend_ema_period   = 200;         // Trend EMA Period
 
-//--- Risk Management & Exit
+//--- Bollinger Bands Settings
+sinput group                 "Bollinger Bands Settings"
+input int                    inp_bb_period          = 20;          // BB Period
+input double                 inp_bb_deviation       = 2.0;         // BB Deviation
+
+//--- Squeeze Detection
+sinput group                 "Squeeze Detection"
+input int                    inp_squeeze_lookback   = 100;         // Lookback period for Squeeze
+input double                 inp_squeeze_threshold  = 0.8;         // Squeeze Threshold (as % of Avg Width)
+
+//--- Risk Management
 sinput group                 "Risk Management"
 input double                 inp_lots               = 0.01;        // Trade Lot Size
-input double                 inp_tp_pips            = 10.0;        // Take Profit (Pips)
+input double                 inp_tp_pips            = 20.0;        // Take Profit (Pips)
 input double                 inp_sl_buffer_pips     = 2.0;         // SL Buffer (Pips) from Candle High/Low
-
-//--- EA Management
-sinput group                 "EA Management"
-input ulong                  inp_magic_number       = 65432;       // EA Magic Number
-input string                 inp_comment            = "MACross";   // Trade Comment
+input ulong                  inp_magic_number       = 87654;       // EA Magic Number
+input string                 inp_comment            = "BBSqueeze"; // Trade Comment
 
 //+------------------------------------------------------------------+
 //| Global Variables                                                 |
 //+------------------------------------------------------------------+
 CTrade          g_trade;
-int             g_ema_fast_handle;
-int             g_ema_medium_handle;
-int             g_ema_slow_handle;
+int             g_trend_ema_handle;
+int             g_bb_handle;
 
 //+------------------------------------------------------------------+
 //| Forward Declarations                                             |
@@ -51,36 +56,27 @@ void ExecuteSell(const MqlRates &entry_candle);
 //+------------------------------------------------------------------+
 int OnInit()
   {
-//--- Initialize trade object
    g_trade.SetExpertMagicNumber(inp_magic_number);
    g_trade.SetMarginMode();
    g_trade.SetTypeFillingBySymbol(_Symbol);
 
-//--- Get Fast EMA handle
-   g_ema_fast_handle=iMA(_Symbol,_Period,inp_ema_fast_period,0,MODE_EMA,PRICE_CLOSE);
-   if(g_ema_fast_handle==INVALID_HANDLE)
+//--- Get Trend EMA handle
+   g_trend_ema_handle=iMA(_Symbol,inp_trend_tf,inp_trend_ema_period,0,MODE_EMA,PRICE_CLOSE);
+   if(g_trend_ema_handle==INVALID_HANDLE)
      {
-      Print("Error getting Fast EMA indicator handle. Error: ",GetLastError());
+      Print("Error getting Trend EMA indicator handle: ",GetLastError());
       return(INIT_FAILED);
      }
 
-//--- Get Medium EMA handle
-   g_ema_medium_handle=iMA(_Symbol,_Period,inp_ema_medium_period,0,MODE_EMA,PRICE_CLOSE);
-   if(g_ema_medium_handle==INVALID_HANDLE)
+//--- Get Bollinger Bands handle
+   g_bb_handle=iBands(_Symbol,_Period,inp_bb_period,0,inp_bb_deviation,PRICE_CLOSE);
+   if(g_bb_handle==INVALID_HANDLE)
      {
-      Print("Error getting Medium EMA indicator handle. Error: ",GetLastError());
+      Print("Error getting Bollinger Bands indicator handle: ",GetLastError());
       return(INIT_FAILED);
      }
 
-//--- Get Slow EMA handle
-   g_ema_slow_handle=iMA(_Symbol,_Period,inp_ema_slow_period,0,MODE_EMA,PRICE_CLOSE);
-   if(g_ema_slow_handle==INVALID_HANDLE)
-     {
-      Print("Error getting Slow EMA indicator handle. Error: ",GetLastError());
-      return(INIT_FAILED);
-     }
-
-   Print("MA Crossover Retracement EA initialized successfully.");
+   Print("BB Squeeze EA initialized successfully.");
    return(INIT_SUCCEEDED);
   }
 //+------------------------------------------------------------------+
@@ -88,12 +84,13 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-//--- Release indicator handles
-   IndicatorRelease(g_ema_fast_handle);
-   IndicatorRelease(g_ema_medium_handle);
-   IndicatorRelease(g_ema_slow_handle);
-   Print("MA Crossover Retracement EA deinitialized.");
+   IndicatorRelease(g_trend_ema_handle);
+   IndicatorRelease(g_bb_handle);
+   Print("BB Squeeze EA deinitialized.");
   }
+
+//--- State Management
+bool g_squeeze_active = false; // Global flag for active squeeze
 
 //+------------------------------------------------------------------+
 //| Expert tick function                                             |
@@ -123,59 +120,61 @@ void OnTick()
 //+------------------------------------------------------------------+
 void CheckAndManageTrade()
   {
-//--- Get latest price and indicator data
-   MqlRates rates[3];
-   if(CopyRates(_Symbol,_Period,0,3,rates)<3) return;
+//--- 1. Get Data
+   int lookback = inp_squeeze_lookback + 2;
+   MqlRates rates[];
+   if(CopyRates(_Symbol,_Period,0,lookback,rates)<lookback) return;
 
-   double fast_ema[3], medium_ema[3], slow_ema[3];
-   if(CopyBuffer(g_ema_fast_handle,0,0,3,fast_ema)<3 ||
-      CopyBuffer(g_ema_medium_handle,0,0,3,medium_ema)<3 ||
-      CopyBuffer(g_ema_slow_handle,0,0,3,slow_ema)<3)
+   double upper_band[lookback], lower_band[lookback];
+   if(CopyBuffer(g_bb_handle,1,0,lookback,upper_band)<lookback ||
+      CopyBuffer(g_bb_handle,2,0,lookback,lower_band)<lookback) return;
+
+//--- 2. Determine Trend
+   double htf_ema_buffer[1];
+   if(CopyBuffer(g_trend_ema_handle,0,0,1,htf_ema_buffer)<1) return;
+   bool is_uptrend = (rates[0].close > htf_ema_buffer[0]);
+   bool is_downtrend = (rates[0].close < htf_ema_buffer[0]);
+   if(!is_uptrend && !is_downtrend) return;
+
+//--- 3. Squeeze Detection
+   double total_width = 0;
+   for(int i=2; i<inp_squeeze_lookback+2; i++)
      {
-      return; // Error copying buffers
+      total_width += (upper_band[i] - lower_band[i]);
+     }
+   double avg_width = total_width / inp_squeeze_lookback;
+   double current_width = upper_band[1] - lower_band[1];
+
+   if(current_width < (avg_width * inp_squeeze_threshold))
+     {
+      g_squeeze_active = true;
+      Comment("Squeeze Detected! Watching for breakout...");
+      return; // Squeeze is forming, wait for breakout on a future bar
      }
 
-//--- 1. Trend Determination (on the last closed bar, index 1)
-   bool is_uptrend = (fast_ema[1] > medium_ema[1] && medium_ema[1] > slow_ema[1]);
-   bool is_downtrend = (fast_ema[1] < medium_ema[1] && medium_ema[1] < slow_ema[1]);
-
-   if(!is_uptrend && !is_downtrend) return; // No clear trend
-
-//--- 2. Entry Pattern Detection
-   bool buy_setup = false;
-   if(is_uptrend)
+//--- 4. Breakout Detection
+   if(g_squeeze_active)
      {
-      // A pullback is when the close of bar[2] is below the fast EMA
-      bool pullback = rates[2].close < fast_ema[2];
-      // A recovery is when the close of bar[1] is back above the fast EMA
-      bool recovery = rates[1].close > fast_ema[1];
-      if(pullback && recovery)
+      bool breakout_buy = is_uptrend && rates[1].close > upper_band[1];
+      bool breakout_sell = is_downtrend && rates[1].close < lower_band[1];
+
+      if(breakout_buy)
         {
-         buy_setup=true;
+         ExecuteBuy(rates[1]);
+         g_squeeze_active=false; // Reset after breakout
         }
-     }
-
-   bool sell_setup = false;
-   if(is_downtrend)
-     {
-      // A pullback is when the close of bar[2] is above the fast EMA
-      bool pullback = rates[2].close > fast_ema[2];
-      // A recovery is when the close of bar[1] is back below the fast EMA
-      bool recovery = rates[1].close < fast_ema[1];
-      if(pullback && recovery)
+      else if(breakout_sell)
         {
-         sell_setup=true;
+         ExecuteSell(rates[1]);
+         g_squeeze_active=false; // Reset after breakout
         }
-     }
 
-//--- If a setup is found, execute the trade
-   if(buy_setup)
-     {
-      ExecuteBuy(rates[1]);
-     }
-   else if(sell_setup)
-     {
-      ExecuteSell(rates[1]);
+      // Optional: Reset if bands expand significantly without a breakout
+      if(current_width > (upper_band[2] - lower_band[2]) * 1.5)
+        {
+         g_squeeze_active=false;
+         Comment("");
+        }
      }
   }
 

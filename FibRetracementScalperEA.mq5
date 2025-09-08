@@ -200,28 +200,43 @@ void CheckAndManageTrade()
    if(is_uptrend)
      {
       if((inp_use_fib_1 && current_rates[1].low <= g_fib_1) || (inp_use_fib_2 && current_rates[1].low <= g_fib_2) || (inp_use_fib_3 && current_rates[1].low <= g_fib_3)) touch_ok=true;
-      if(current_rates[1].close > current_rates[1].open && current_rates[2].close < current_rates[2].open) reversal_ok=true;
+
+      // Bullish Engulfing Pattern Check
+      bool is_bullish_engulfing = current_rates[1].close > current_rates[1].open &&   // Current is bullish
+                                  current_rates[2].close < current_rates[2].open &&   // Previous was bearish
+                                  current_rates[1].close > current_rates[2].open &&   // Current close is higher than previous open
+                                  current_rates[1].open < current_rates[2].close;     // Current open is lower than previous close
+      if(is_bullish_engulfing) reversal_ok=true;
      }
    else // downtrend
      {
       if((inp_use_fib_1 && current_rates[1].high >= g_fib_1) || (inp_use_fib_2 && current_rates[1].high >= g_fib_2) || (inp_use_fib_3 && current_rates[1].high >= g_fib_3)) touch_ok=true;
-      if(current_rates[1].close < current_rates[1].open && current_rates[2].close > current_rates[2].open) reversal_ok=true;
+
+      // Bearish Engulfing Pattern Check
+      bool is_bearish_engulfing = current_rates[1].close < current_rates[1].open &&   // Current is bearish
+                                  current_rates[2].close > current_rates[2].open &&   // Previous was bullish
+                                  current_rates[1].close < current_rates[2].open &&   // Current close is lower than previous open
+                                  current_rates[1].open > current_rates[2].close;     // Current open is higher than previous close
+      if(is_bearish_engulfing) reversal_ok=true;
      }
 
    if(touch_ok && reversal_ok)
      {
       double sl, tp, price;
+      //--- Adjust pip value for 3/5 digit brokers
+      double pip_value = SymbolInfoDouble(_Symbol, SYMBOL_POINT) * (SymbolInfoInteger(_Symbol, SYMBOL_DIGITS) == 3 || SymbolInfoInteger(_Symbol, SYMBOL_DIGITS) == 5 ? 10 : 1);
+
       if(is_uptrend)
         {
          price = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-         sl = g_swing_for_sl - inp_sl_pips_buffer * _Point;
+         sl = g_swing_for_sl - inp_sl_pips_buffer * pip_value;
          tp = price + (price - sl) * inp_tp_rr;
          g_trade.Buy(inp_lots,_Symbol,price,sl,tp,inp_comment);
         }
       else // downtrend
         {
          price = SymbolInfoDouble(_Symbol,SYMBOL_BID);
-         sl = g_swing_for_sl + inp_sl_pips_buffer * _Point;
+         sl = g_swing_for_sl + inp_sl_pips_buffer * pip_value;
          tp = price - (sl - price) * inp_tp_rr;
          g_trade.Sell(inp_lots,_Symbol,price,sl,tp,inp_comment);
         }

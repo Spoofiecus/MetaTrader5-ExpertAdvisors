@@ -222,9 +222,10 @@ void CheckAndManageTrade()
 //+------------------------------------------------------------------+
 void ExecuteBuy(const MqlRates &entry_candle)
   {
+   double pip_value = SymbolInfoDouble(_Symbol, SYMBOL_POINT) * (SymbolInfoInteger(_Symbol, SYMBOL_DIGITS) == 3 || SymbolInfoInteger(_Symbol, SYMBOL_DIGITS) == 5 ? 10 : 1);
    double price = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-   double sl = entry_candle.low - inp_sl_buffer_pips * (_Point * 10.0);
-   double tp = price + inp_tp_pips * (_Point * 10.0);
+   double sl = entry_candle.low - inp_sl_buffer_pips * pip_value;
+   double tp = price + inp_tp_pips * pip_value;
 
    if(!g_trade.Buy(inp_lots,_Symbol,price,sl,tp,inp_comment))
      {
@@ -241,9 +242,10 @@ void ExecuteBuy(const MqlRates &entry_candle)
 //+------------------------------------------------------------------+
 void ExecuteSell(const MqlRates &entry_candle)
   {
+   double pip_value = SymbolInfoDouble(_Symbol, SYMBOL_POINT) * (SymbolInfoInteger(_Symbol, SYMBOL_DIGITS) == 3 || SymbolInfoInteger(_Symbol, SYMBOL_DIGITS) == 5 ? 10 : 1);
    double price = SymbolInfoDouble(_Symbol,SYMBOL_BID);
-   double sl = entry_candle.high + inp_sl_buffer_pips * (_Point * 10.0);
-   double tp = price - inp_tp_pips * (_Point * 10.0);
+   double sl = entry_candle.high + inp_sl_buffer_pips * pip_value;
+   double tp = price - inp_tp_pips * pip_value;
 
    if(!g_trade.Sell(inp_lots,_Symbol,price,sl,tp,inp_comment))
      {
